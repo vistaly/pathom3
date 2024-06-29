@@ -6,6 +6,7 @@
     [com.wsscode.pathom3.attribute :as p.attr]
     [com.wsscode.pathom3.connect.planner :as pcp]
     [com.wsscode.pathom3.plugin :as p.plugin]
+    [lambdaisland.glogc :as log]
     #?(:cljs [goog.object :as gobj]))
   #?(:clj
      (:import
@@ -133,6 +134,7 @@
         datafy-processor-error*)))
 
 (defn datafy-processor-error [^Throwable err]
+  (log/error :processor/error err)
   (let [env (ex-data err)]
     (if (some-> env :com.wsscode.pathom3.connect.runner/processor-error?)
       (datafy-processor-error* env)

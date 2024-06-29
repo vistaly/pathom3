@@ -14,6 +14,7 @@
     [com.wsscode.pathom3.interface.eql :as p.eql]
     [com.wsscode.pathom3.plugin :as p.plugin]
     [edn-query-language.core :as eql]
+    [lambdaisland.glogc :as log]
     [promesa.core :as p]))
 
 (defn process-ast* [env ast]
@@ -21,6 +22,7 @@
           result    (if (::parallel? env)
                       (pcrc/run-graph! env ast ent-tree*)
                       (pcra/run-graph! env ast ent-tree*))]
+    (log/trace :process-ast/result result)
     (as-> result <>
       (pf.eql/map-select-ast (p.eql/select-ast-env env) <> ast))))
 
@@ -153,9 +155,13 @@
                                        ::pcr/omit-run-stats? (not include-stats?)))
                    entity'       (or entity {})]
 
+             (log/info :boundary-interface/ast ast)
              (if ast
                (process-ast (p.ent/with-entity env' entity') ast)
                (process env' entity' (or eql (:pathom/tx request)))))
+           (p/then (fn [response]
+                     (log/trace :boundary-interface/response response)
+                     response))
            (p/catch p.error/datafy-processor-error)))
       ([input]
        (boundary-interface-internal nil input)))))
