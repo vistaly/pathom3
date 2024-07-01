@@ -23,15 +23,17 @@
                       (pcrc/run-graph! env ast ent-tree*)
                       (pcra/run-graph! env ast ent-tree*))]
     (log/trace :process-ast/result result)
-    (as-> result <>
-      (pf.eql/map-select-ast (p.eql/select-ast-env env) <> ast))))
+    (log/spy
+     (as-> result <>
+       (pf.eql/map-select-ast (p.eql/select-ast-env env) <> ast)))))
 
 (>defn process-ast
   [env ast]
   [::pcra/env :edn-query-language.ast/node => p/promise?]
   (p/let [env env]
-    (p.plugin/run-with-plugins env ::p.eql/wrap-process-ast
-      process-ast* env ast)))
+    (log/spy
+     (p.plugin/run-with-plugins env ::p.eql/wrap-process-ast
+                                process-ast* env ast))))
 
 (>defn process
   "Evaluate EQL expression using async runner.
@@ -64,10 +66,17 @@
    [::pcra/env map? ::eql/query => p/promise?]
    (assert (map? entity) "Entity data must be a map.")
    (p/let [env env]
-     (process-ast (-> env
-                      (assoc ::pcr/root-query tx)
-                      (p.ent/with-entity entity))
-                  (eql/query->ast tx)))))
+     (-> (process-ast (-> env
+                          (assoc ::pcr/root-query tx)
+                          (p.ent/with-entity entity))
+                      (eql/query->ast tx))
+
+         (p/then (fn [response]
+                   (log/trace :process/response response)
+                   response))
+         (p/catch (fn [error]
+                    (log/error :process/error error)
+                    (throw error)))))))
 
 (>defn process-one
   "Similar to process, but returns a single value instead of a map.
