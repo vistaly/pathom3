@@ -20,6 +20,7 @@
     [com.wsscode.pathom3.path :as p.path]
     [com.wsscode.pathom3.plugin :as p.plugin]
     [com.wsscode.promesa.macros :refer [clet ctry]]
+    [lambdaisland.glogc :as log]
     [promesa.core :as p]))
 
 (>def ::env (s/or :env (s/keys) :env-promise p/promise?))
@@ -162,40 +163,51 @@
 (defn run-next-node!
   "Runs the next node associated with the node, in case it exists."
   [{::pcp/keys [graph] :as env} {::pcp/keys [run-next]}]
+  (log/trace :run-next-node! run-next)
   (if run-next
     (run-node! env (pcp/get-node graph run-next))))
 
 (defn- invoke-resolver-cached
   [env cache? op-name resolver cache-store input-data params]
+  (log/trace :invoke-resolver-cached/cache? cache?
+             :invoke-resolver-cached/op-name? op-name
+             :invoke-resolver-cached/input-data input-data)
+
   (if cache?
     (p.cache/cached cache-store env
-      (pcr/cache-key env input-data op-name params)
-      #(try
-         (pcr/invoke-resolver-with-plugins resolver env input-data)
-         (catch #?(:clj Throwable :cljs :default) e
-           (p/rejected e))))
+                    (pcr/cache-key env input-data op-name params)
+                    #(try
+                       (pcr/invoke-resolver-with-plugins resolver env input-data)
+                       (catch #?(:clj Throwable :cljs :default) e
+                         (log/error :invoke-resolver-cached/error e)
+                         (p/rejected e))))
 
     (try
       (pcr/invoke-resolver-with-plugins resolver env input-data)
       (catch #?(:clj Throwable :cljs :default) e
+        (log/error :invoke-resolver-cached/error e)
         (p/rejected e)))))
 
 (defn- invoke-resolver-cached-batch
   [env cache? op-name resolver cache-store input-data params]
   (pcr/warn-batch-unsupported env op-name)
+  (log/trace :invoke-resolver-cached-batch/cache? cache?
+             :invoke-resolver-cached-batch/op-name? op-name
+             :invoke-resolver-cached-batch/input-data input-data)
   (if cache?
     (p.cache/cached cache-store env
-      (pcr/cache-key env input-data op-name params)
-      #(try
-         (clet [res (pcr/invoke-resolver-with-plugins resolver env [input-data])]
-           (first res))
-         (catch #?(:clj Throwable :cljs :default) e
-           (p/rejected e))))
+                    (pcr/cache-key env input-data op-name params)
+                    #(try
+                       (clet [res (pcr/invoke-resolver-with-plugins resolver env [input-data])]
+                             (first res))
+                       (catch #?(:clj Throwable :cljs :default) e
+                         (p/rejected e))))
 
     (try
       (clet [res (pcr/invoke-resolver-with-plugins resolver env [input-data])]
-        (first res))
+            (first res))
       (catch #?(:clj Throwable :cljs :default) e
+        (log/error :invoke-resolver-cached-batch/error e)
         (p/rejected e)))))
 
 (defn invoke-resolver-from-node
@@ -244,11 +256,12 @@
                                 (pcr/report-resolver-error env node error))))]
     (p/let [response response
             response (pcr/validate-response! env node response)]
+      (log/trace :invoke-resolver-from-node/response response)
       (let [finish (time/now-ms)]
         (pcr/merge-node-stats! env node
-          (cond-> {::pcr/resolver-run-finish-ms finish}
-            (not (::pcr/batch-hold response))
-            (merge (pcr/report-resolver-io-stats env input-data response)))))
+                               (cond-> {::pcr/resolver-run-finish-ms finish}
+                                 (not (::pcr/batch-hold response))
+                                 (merge (pcr/report-resolver-io-stats env input-data response)))))
       response)))
 
 (defn run-resolver-node!
@@ -263,17 +276,18 @@
             env' (assoc env ::pcp/node node)
             {::pcr/keys [batch-hold] :as response}
             (invoke-resolver-from-node env' node)]
+      (log/trace :run-resolver-node/response response)
       (cond
         batch-hold response
 
         (or (not (refs/kw-identical? ::pcr/node-error response))
             (pcp/node-optional? node))
         (p/do!
-          (merge-resolver-response! env response)
-          (pcr/merge-node-stats! env node {::pcr/node-run-finish-ms (time/now-ms)})
-          (if-not (and (::pcp/node-resolution-checkpoint? node)
-                       (pcr/user-demand-completed? env))
-            (run-next-node! env node)))
+         (merge-resolver-response! env response)
+         (pcr/merge-node-stats! env node {::pcr/node-run-finish-ms (time/now-ms)})
+         (if-not (and (::pcp/node-resolution-checkpoint? node)
+                      (pcr/user-demand-completed? env))
+           (run-next-node! env node)))
 
         :else
         (do
@@ -300,8 +314,11 @@
                                (first nodes)))
             _              (pcr/add-taken-path! env or-node node-id)
             node-res       (-> (p/let [res (run-node! env (pcp/get-node graph node-id))]
+                                 (log/trace :run-or-node/res res)
                                  res)
-                               (p/catch #(array-map ::pcr/or-option-error %)))]
+                               (p/catch (fn [err]
+                                          (log/error :run-or-node/error err)
+                                          (array-map ::pcr/or-option-error err))))]
       (cond
         (::pcr/batch-hold node-res)
         node-res
@@ -323,6 +340,7 @@
 
     (p/let [res (if-not (pcr/all-requires-ready? env or-node)
                   (run-or-node!* env or-node run-or []))]
+      (log/trace :run-or-node/res res)
       (cond
         (::pcr/batch-hold res)
         res
@@ -348,6 +366,8 @@
               (if xs
                 (p/let [node-id  (first xs)
                         node-res (run-node! env (pcp/get-node graph node-id))]
+                  (log/trace :run-and-node/node-id node-id
+                             :run-and-node/node-res node-res)
                   (if (::pcr/batch-hold node-res)
                     node-res
                     (p/recur (next xs))))))]
@@ -505,7 +525,9 @@
       (if (pcr/runnable-graph? graph)
         (run-graph!* env)
         (do
+          (log/trace :plan-and-run/pre-run-graph-entity-done true)
           (run-graph-entity-done env)
+          (log/trace :plan-and-run/post-run-graph-entity-done true)
           env))
       (catch #?(:clj Throwable :cljs :default) e
         (throw (pcr/processor-exception env e))))))
@@ -561,12 +583,15 @@
                 (fn [_ {env'       ::pcr/env
                         ::pcp/keys [node]}]
                   (p/do!
-                    (run-graph-entity-done env')
-                    (pcr/merge-entity-to-root-data env env' node)))
+                   (log/trace :run-batches-pending/run-graph-entity-done true)
+                   (run-graph-entity-done env')
+                   (log/trace :run-batches-pending/merge-entity-to-root-data true)
+                   (pcr/merge-entity-to-root-data env env' node)))
                 nil
                 batch-items))
             (do
               (if (not= (count inputs) (count responses))
+                (log/error :batch/error :non-sequence)
                 (throw (ex-info "Batch results must be a sequence and have the same length as the inputs." {})))
 
               (reduce-async
@@ -582,13 +607,17 @@
                            (pcr/report-resolver-io-stats env' node-resolver-input response)))
 
                   (p/do!
-                    (merge-resolver-response! env' response)
+                   (log/trace :run-batches-pending/merge-resolver-response true)
+                   (merge-resolver-response! env' response)
 
-                    (pcr/merge-node-stats! env' node {::pcr/node-run-finish-ms (time/now-ms)})
+                   (log/trace :run-batches-pending/merge-node-stats true)
+                   (pcr/merge-node-stats! env' node {::pcr/node-run-finish-ms (time/now-ms)})
 
-                    (run-root-node! env')
+                   (log/trace :run-batches-pending/run-root-node true)
+                   (run-root-node! env')
 
-                    (pcr/merge-entity-to-root-data env env' node)))
+                   (log/trace :run-batches-pending/merge-entity-data true)
+                   (pcr/merge-entity-to-root-data env env' node)))
                 nil
                 (pcr/combine-inputs-with-responses input-groups inputs responses))))))
       nil
@@ -603,17 +632,21 @@
         (p.ent/reset-entity! env' (get-in (p.ent/entity env) (::p.path/path env')))
 
         (p/do!
-          (run-root-node! env')
+         (log/trace :run-batches-waiting/run-root-node! :pre)
+         (run-root-node! env')
+         (log/trace :run-batches-waiting/run-root-node! :post)
 
-          (when-not (p.path/root? env')
-            (p.ent/swap-entity! env assoc-in (::p.path/path env')
-              (p.ent/entity env')))))
+         (when-not (p.path/root? env')
+           (p.ent/swap-entity! env assoc-in (::p.path/path env')
+                               (p.ent/entity env')))))
       nil
       waits)))
 
 (defn run-batches! [env]
   (p/do!
+    (log/trace :run-batches/pending true)
     (run-batches-pending! env)
+    (log/trace :run-batches/waiting true)
     (run-batches-waiting! env)))
 
 (defn run-graph-impl!
@@ -633,6 +666,7 @@
             (pcr/include-meta-stats env)))
 
       (catch #?(:clj Throwable :cljs :default) e
+        (log/error :run-graph-impl/error e)
         (throw (pcr/processor-exception env e))))))
 
 (>defn run-graph!
