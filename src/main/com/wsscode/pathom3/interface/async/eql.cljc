@@ -18,14 +18,20 @@
     [promesa.core :as p]))
 
 (defn process-ast* [env ast]
-  (p/let [ent-tree* (get env ::p.ent/entity-tree* (p.ent/create-entity {}))
-          result    (if (::parallel? env)
-                      (pcrc/run-graph! env ast ent-tree*)
-                      (pcra/run-graph! env ast ent-tree*))]
-    (log/trace :process-ast/result result)
-    (log/spy
-     (as-> result <>
-       (pf.eql/map-select-ast (p.eql/select-ast-env env) <> ast)))))
+  (log/trace :process-ast/ast ast
+             :process-ast/parallel? (::parallel? env))
+  (-> (p/let [ent-tree* (get env ::p.ent/entity-tree* (p.ent/create-entity {}))
+              result    (if (::parallel? env)
+                          (pcrc/run-graph! env ast ent-tree*)
+                          (pcra/run-graph! env ast ent-tree*))]
+        (log/trace :process-ast/result result)
+        (log/spy
+         (as-> result <>
+           (pf.eql/map-select-ast (p.eql/select-ast-env env) <> ast))))
+
+      (p/catch (fn [error]
+                 (log/error :process-ast/error error)
+                 (throw error)))))
 
 (>defn process-ast
   [env ast]
